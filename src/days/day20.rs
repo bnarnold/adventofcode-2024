@@ -11,6 +11,7 @@ use crossterm::{
     terminal::Clear,
 };
 use nom::combinator::opt;
+use rayon::prelude::*;
 
 use crate::util::prelude::*;
 
@@ -110,11 +111,11 @@ impl Map {
         &self,
         cheat_distance: usize,
         min_gain: usize,
-    ) -> impl Iterator<Item = usize> + '_ {
-        let mut plot = std::env::var_os("PLOT").map(|_| stdout());
+    ) -> impl ParallelIterator<Item = usize> + '_ {
+        let plot = std::env::var_os("PLOT").is_some();
 
-        if let Some(ref mut stdout) = plot {
-            execute!(stdout, Clear(crossterm::terminal::ClearType::All), Hide).unwrap();
+        if plot {
+            execute!(stdout(), Clear(crossterm::terminal::ClearType::All), Hide).unwrap();
         }
         let main_diagonals = (0..self.main_diagonals.len())
             .map(|diag| {
@@ -134,63 +135,68 @@ impl Map {
                     .fold(HashSet::<usize>::new(), |acc, steps| &acc | steps)
             })
             .collect_vec();
-        self.fields.iter().enumerate().flat_map(move |(step, pos)| {
-            let main_diagonal = (self.width - 1 - pos[0] + pos[1]) as usize;
-            let off_diagonal = (pos[0] + pos[1]) as usize;
+        self.fields
+            .par_iter()
+            .enumerate()
+            .flat_map(move |(step, pos)| {
+                let main_diagonal = (self.width - 1 - pos[0] + pos[1]) as usize;
+                let off_diagonal = (pos[0] + pos[1]) as usize;
 
-            let reachable_on_main = &main_diagonals[main_diagonal];
-            let reachable_on_off = &off_diagonals[off_diagonal];
+                let reachable_on_main = &main_diagonals[main_diagonal];
+                let reachable_on_off = &off_diagonals[off_diagonal];
 
-            if let Some(ref mut stdout) = plot {
-                for (plot_step, plot_pos) in self.fields.iter().copied().enumerate() {
-                    let color = match (
-                        &plot_pos == pos,
-                        reachable_on_main.contains(&plot_step),
-                        reachable_on_off.contains(&plot_step),
-                    ) {
-                        (true, _, _) => Color::Blue,
-                        (_, true, false) => Color::Red,
-                        (_, false, true) => Color::Green,
-                        (_, false, false) => Color::Grey,
-                        (_, true, true) => {
-                            let cheat_distance =
-                                pos[0].abs_diff(plot_pos[0]) + pos[1].abs_diff(plot_pos[1]);
-                            if step + cheat_distance as usize + min_gain < plot_step {
-                                Color::Yellow
-                            } else {
-                                let gain = plot_step.saturating_sub(step + cheat_distance as usize);
-                                let scaled = (64 + (128 * gain) / min_gain) as u8;
+                if plot {
+                    let mut stdout = stdout().lock();
+                    for (plot_step, plot_pos) in self.fields.iter().copied().enumerate() {
+                        let color = match (
+                            &plot_pos == pos,
+                            reachable_on_main.contains(&plot_step),
+                            reachable_on_off.contains(&plot_step),
+                        ) {
+                            (true, _, _) => Color::Blue,
+                            (_, true, false) => Color::Red,
+                            (_, false, true) => Color::Green,
+                            (_, false, false) => Color::Grey,
+                            (_, true, true) => {
+                                let cheat_distance =
+                                    pos[0].abs_diff(plot_pos[0]) + pos[1].abs_diff(plot_pos[1]);
+                                if step + cheat_distance as usize + min_gain < plot_step {
+                                    Color::Yellow
+                                } else {
+                                    let gain =
+                                        plot_step.saturating_sub(step + cheat_distance as usize);
+                                    let scaled = (64 + (128 * gain) / min_gain) as u8;
 
-                                Color::Rgb {
-                                    r: scaled,
-                                    g: scaled,
-                                    b: scaled,
+                                    Color::Rgb {
+                                        r: scaled,
+                                        g: scaled,
+                                        b: scaled,
+                                    }
                                 }
                             }
-                        }
-                    };
-                    execute!(
-                        stdout,
-                        MoveTo(plot_pos[0], plot_pos[1]),
-                        PrintStyledContent('▉'.stylize().with(color))
-                    )
-                    .unwrap();
+                        };
+                        execute!(
+                            stdout,
+                            MoveTo(plot_pos[0], plot_pos[1]),
+                            PrintStyledContent('▉'.stylize().with(color))
+                        )
+                        .unwrap();
+                    }
+                    execute!(stdout, MoveTo(0, self.height + 1)).unwrap();
+                    std::thread::sleep(Duration::from_millis(20));
                 }
-                execute!(stdout, MoveTo(0, self.height + 1)).unwrap();
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            let reachable_fields = reachable_on_main & reachable_on_off;
-            reachable_fields
-                .into_iter()
-                .flat_map(move |reachable_step| {
-                    let path_distance = reachable_step.checked_sub(step)?;
-                    let target_pos = self.fields[reachable_step];
-                    let cheat_distance =
-                        pos[0].abs_diff(target_pos[0]) + pos[1].abs_diff(target_pos[1]);
-                    path_distance.checked_sub(cheat_distance as usize)
-                })
-                .filter(move |saving| *saving >= min_gain)
-        })
+                let reachable_fields = reachable_on_main & reachable_on_off;
+                reachable_fields
+                    .into_par_iter()
+                    .flat_map(move |reachable_step| {
+                        let path_distance = reachable_step.checked_sub(step)?;
+                        let target_pos = self.fields[reachable_step];
+                        let cheat_distance =
+                            pos[0].abs_diff(target_pos[0]) + pos[1].abs_diff(target_pos[1]);
+                        path_distance.checked_sub(cheat_distance as usize)
+                    })
+                    .filter(move |saving| *saving >= min_gain)
+            })
     }
 }
 
@@ -212,7 +218,7 @@ mod test {
     fn level1_given_example() {
         let test_input = include_str!("./test_input/day20.txt");
         let map = Map::parse_input(test_input).expect("parse");
-        let cheats = map.cheat_savings(2, 1);
+        let cheats: Vec<usize> = map.cheat_savings(2, 1).collect();
         let counts = cheats.into_iter().counts();
         assert_eq!(counts.get(&64).copied(), Some(1));
     }
@@ -221,7 +227,7 @@ mod test {
     fn level2_given_example() {
         let test_input = include_str!("./test_input/day20.txt");
         let map = Map::parse_input(test_input).expect("parse");
-        let cheats = map.cheat_savings(20, 50);
+        let cheats: Vec<usize> = map.cheat_savings(20, 50).collect();
         let counts = cheats.into_iter().counts();
         assert_eq!(counts.get(&64).copied(), Some(19));
         assert_eq!(counts.get(&76).copied(), Some(3));
