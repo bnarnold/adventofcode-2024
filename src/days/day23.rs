@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
+use itertools::Itertools;
+use rayon::prelude::*;
+
 pub fn level1(input: &str) -> usize {
     let mut graph: HashMap<&str, HashSet<&str>> = HashMap::new();
     for line in input.lines() {
@@ -35,8 +38,43 @@ pub fn level1(input: &str) -> usize {
     result / 12
 }
 
-pub fn level2(input: &str) -> usize {
-    0
+pub fn level2(input: &str) -> String {
+    let mut graph: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for line in input.lines() {
+        let (start, end) = line.split_once('-').expect("parse");
+        graph.entry(start).or_default().insert(end);
+        graph.entry(end).or_default().insert(start);
+    }
+
+    let mut cliques: Vec<(HashSet<_>, HashSet<_>)> =
+        vec![(HashSet::new(), graph.keys().copied().collect())];
+    for (node, neighbors) in &graph {
+        cliques = cliques
+            .into_par_iter()
+            .flat_map(|(nodes, adjacent)| {
+                if adjacent.contains(node) {
+                    let mut new_nodes = nodes.clone();
+                    new_nodes.insert(*node);
+                    [
+                        Some((new_nodes, &adjacent & neighbors)),
+                        Some((nodes, adjacent)),
+                    ]
+                    .into_par_iter()
+                    .flatten()
+                } else {
+                    [Some((nodes, adjacent)), None].into_par_iter().flatten()
+                }
+            })
+            .collect();
+    }
+
+    let largest_clique = cliques
+        .into_iter()
+        .map(|(nodes, _)| nodes)
+        .max_by_key(|clique| clique.len())
+        .unwrap_or_default();
+
+    largest_clique.into_iter().sorted().join(",")
 }
 
 #[cfg(test)]
@@ -70,6 +108,6 @@ mod test {
     #[test]
     fn level2_given_example() {
         let test_input = include_str!("./test_input/day23.txt");
-        assert_eq!(level2(test_input), 0)
+        assert_eq!(&level2(test_input), "co,de,ka,ta")
     }
 }
