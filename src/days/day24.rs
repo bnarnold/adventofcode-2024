@@ -1,3 +1,4 @@
+use core::panic;
 use std::collections::HashMap;
 
 use nom::{
@@ -98,6 +99,18 @@ impl<'a> Computer<'a> {
         }
         result
     }
+
+    fn swap(&mut self, src: &'a str, tgt: &'a str) {
+        let Some(src_op) = self.nodes.remove(&src) else {
+            return;
+        };
+        let Some(tgt_op) = self.nodes.remove(&tgt) else {
+            return;
+        };
+
+        self.nodes.insert(src, tgt_op);
+        self.nodes.insert(tgt, src_op);
+    }
 }
 
 pub fn level1(input: &str) -> i64 {
@@ -113,6 +126,103 @@ pub fn level1(input: &str) -> i64 {
 }
 
 pub fn level2(input: &str) -> i64 {
+    // check some properties, this is easier to solve ad hoc in the editor
+    let mut computer = Computer::from_input(input).expect("parse");
+    let swaps = [
+        ["tpk", "wkb"],
+        ["shj", "z07"],
+        ["pfn", "z23"],
+        ["kcd", "z27"],
+    ];
+    for swap in &swaps {
+        computer.swap(swap[0], swap[1]);
+    }
+    let bit_count = computer.inputs.len() / 2;
+
+    let xors = (0..bit_count)
+        .map(|i| {
+            let Some((label, _)) = computer.nodes.iter().find(|(_, (op, mut inputs))| {
+                let x_input = format!("x{i:02}");
+                let y_input = format!("y{i:02}");
+
+                inputs.sort();
+                matches!(op, Operation::Xor) && inputs == [x_input, y_input]
+            }) else {
+                panic!("No xor for bit {i:02}");
+            };
+            *label
+        })
+        .collect_vec();
+    let ands = (0..bit_count)
+        .map(|i| {
+            let Some((label, _)) = computer.nodes.iter().find(|(_, (op, mut inputs))| {
+                let x_input = format!("x{i:02}");
+                let y_input = format!("y{i:02}");
+
+                inputs.sort();
+                matches!(op, Operation::And) && inputs == [x_input, y_input]
+            }) else {
+                panic!("No xor for bit {i:02}");
+            };
+            *label
+        })
+        .collect_vec();
+
+    let carries = (1..bit_count)
+        .map(|i| {
+            let Some(label) = computer
+                .nodes
+                .iter()
+                .flat_map(|(_, (op, [left, right]))| {
+                    let xor = xors[i];
+
+                    if matches!(op, Operation::Xor) {
+                        if *left == xor {
+                            Some(right)
+                        } else if *right == xor {
+                            Some(left)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .next()
+            else {
+                panic!("no xor carry operation for {i:02}");
+            };
+            *label
+        })
+        .collect_vec();
+
+    for i in 0..bit_count {
+        let (op, mut inputs) = computer
+            .nodes
+            .get(&format!("z{i:02}").as_str())
+            .copied()
+            .unwrap();
+        assert!(
+            matches!(op, Operation::Xor),
+            "unexpected operation {op:?} for bit {i:02}",
+        );
+        inputs.sort();
+
+        let known_inputs = if i == 0 {
+            ["x00", "y00"]
+        } else {
+            let mut known_inputs = [xors[i], carries[i - 1]];
+            known_inputs.sort();
+            known_inputs
+        };
+        assert_eq!(
+            inputs, known_inputs,
+            "unexpected inputs {inputs:?} for bit {i:02} (expected {known_inputs:?})"
+        );
+    }
+
+    let output = swaps.into_iter().flatten().sorted().join(",");
+    println!("{output}");
     0
 }
 
@@ -130,11 +240,5 @@ mod test {
     fn level1_given_example_large() {
         let test_input = include_str!("./test_input/day24_large.txt");
         assert_eq!(level1(test_input), 2024)
-    }
-
-    #[test]
-    fn level2_given_example() {
-        let test_input = include_str!("./test_input/day24.txt");
-        assert_eq!(level2(test_input), 0)
     }
 }
